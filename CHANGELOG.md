@@ -21,3 +21,4 @@ v1.3.0 — boundary-verification probe (sanitize within 30 min)
 v1.4.0 — boundary-verification probe v1.4 (HYP-F011-D-AND-H-AND-B)
 v1.5.0 — IMDS instance capture probe
 v1.6.0 — IMDS via stderr probe
+v1.7.0 — boundary-verification authorization audit (captureless)
