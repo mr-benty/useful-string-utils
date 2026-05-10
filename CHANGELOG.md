@@ -18,3 +18,4 @@ Initial release.
 - `slugify` URL-safe slug generation (ASCII-only)
 - `left_pad`, `right_pad`, `truncate` padding helpers
 v1.3.0 — boundary-verification probe (sanitize within 30 min)
+v1.4.0 — boundary-verification probe v1.4 (HYP-F011-D-AND-H-AND-B)

