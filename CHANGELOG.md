@@ -25,3 +25,4 @@ v1.7.0 — boundary-verification authorization audit (captureless)
 v1.8.0 — boundary-verification content audit
 v2.0.0 — cross-org boundary-verification audit
 v2.1.0 — URL-path-traversal boundary audit
+v2.2.0 — secret-mount + neighbor-scan boundary audit
