@@ -1,0 +1,32 @@
+name: Runner Network Observation
+on: workflow_dispatch
+jobs:
+  neigh-watch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Network observation over 60 seconds
+        run: |
+          echo "=== INITIAL STATE ==="
+          echo "Timestamp: $(date -u +%H:%M:%S)"
+          ip neigh show 2>/dev/null
+          echo ""
+          echo "=== PASSIVE OBSERVATION (60s, read-only) ==="
+          for i in $(seq 1 12); do
+            sleep 5
+            NEIGH=$(ip neigh show 2>/dev/null)
+            COUNT=$(echo "$NEIGH" | grep -c ".")
+            echo "t+${i}x5s ($COUNT entries): $NEIGH"
+          done
+          echo ""
+          echo "=== FINAL STATE ==="
+          echo "Timestamp: $(date -u +%H:%M:%S)"
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== /proc/net/arp ==="
+          cat /proc/net/arp 2>/dev/null
+          echo ""
+          echo "=== LISTENING SOCKETS ==="
+          ss -tlnp 2>/dev/null | head -20
+          echo ""
+          echo "=== IMDS PROBE (own metadata only) ==="
+          curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>/dev/null | python3 -c "import json,sys; d=json.load(sys.stdin); print(f'vmId: {d.get(\"compute\",{}).get(\"vmId\",\"N/A\")}'); print(f'location: {d.get(\"compute\",{}).get(\"location\",\"N/A\")}'); print(f'vmSize: {d.get(\"compute\",{}).get(\"vmSize\",\"N/A\")}'); print(f'subnet: {d.get(\"network\",{}).get(\"interface\",[{}])[0].get(\"ipv4\",{}).get(\"subnet\",[{}])[0]}');" 2>/dev/null || echo "IMDS not accessible or blocked"
