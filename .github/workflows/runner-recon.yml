@@ -1,0 +1,84 @@
+name: Runner Environment Characterization
+on: workflow_dispatch
+jobs:
+  standard-runner:
+    runs-on: ubuntu-latest
+    steps:
+      - name: System info
+        run: |
+          echo "=== HOSTNAME ==="
+          hostname
+          echo "=== UNAME ==="
+          uname -a
+          echo "=== /proc/1/cgroup ==="
+          cat /proc/1/cgroup 2>/dev/null || echo "NOT READABLE"
+          echo "=== /proc/1/status (first 20 lines) ==="
+          head -20 /proc/1/status 2>/dev/null || echo "NOT READABLE"
+          echo "=== /sys/hypervisor/type ==="
+          cat /sys/hypervisor/type 2>/dev/null || echo "NOT PRESENT"
+          echo "=== /sys/hypervisor/uuid ==="
+          cat /sys/hypervisor/uuid 2>/dev/null || echo "NOT PRESENT"
+          echo "=== DMI PRODUCT ==="
+          cat /sys/class/dmi/id/product_name 2>/dev/null || echo "NOT READABLE"
+          echo "=== INTERFACES ==="
+          ip -4 addr show 2>/dev/null || ifconfig 2>/dev/null
+          echo "=== ROUTES ==="
+          ip route show 2>/dev/null
+          echo "=== NEIGHBOUR TABLE ==="
+          ip neigh show 2>/dev/null
+          echo "=== ARP TABLE ==="
+          arp -an 2>/dev/null || echo "NOT AVAILABLE"
+          echo "=== /proc/net/arp ==="
+          cat /proc/net/arp 2>/dev/null || echo "NOT READABLE"
+          echo "=== MOUNT NAMESPACES ==="
+          ls -la /proc/1/ns/ 2>/dev/null || echo "NOT READABLE"
+          echo "=== CGROUP CONTROLLERS ==="
+          cat /proc/cgroups 2>/dev/null | head -20
+          echo "=== CAPABILITIES ==="
+          cat /proc/1/status 2>/dev/null | grep -i cap
+          echo "=== DOCKER/CONTAINER DETECTION ==="
+          test -f /.dockerenv && echo "DOCKER ENV FILE EXISTS" || echo "NO DOCKER ENV"
+          test -f /run/.containerenv && echo "CONTAINER ENV EXISTS" || echo "NO CONTAINER ENV"
+          echo "=== SECCOMP STATUS ==="
+          cat /proc/1/status 2>/dev/null | grep Seccomp
+          
+  slim-runner:
+    runs-on: ubuntu-24.04-arm-2core
+    steps:
+      - name: System info  
+        run: |
+          echo "=== HOSTNAME ==="
+          hostname
+          echo "=== UNAME ==="
+          uname -a
+          echo "=== /proc/1/cgroup ==="
+          cat /proc/1/cgroup 2>/dev/null || echo "NOT READABLE"
+          echo "=== /proc/1/status (first 20 lines) ==="
+          head -20 /proc/1/status 2>/dev/null || echo "NOT READABLE"
+          echo "=== /sys/hypervisor/type ==="
+          cat /sys/hypervisor/type 2>/dev/null || echo "NOT PRESENT"
+          echo "=== /sys/hypervisor/uuid ==="
+          cat /sys/hypervisor/uuid 2>/dev/null || echo "NOT PRESENT"
+          echo "=== DMI PRODUCT ==="
+          cat /sys/class/dmi/id/product_name 2>/dev/null || echo "NOT READABLE"
+          echo "=== INTERFACES ==="
+          ip -4 addr show 2>/dev/null || ifconfig 2>/dev/null
+          echo "=== ROUTES ==="
+          ip route show 2>/dev/null
+          echo "=== NEIGHBOUR TABLE ==="
+          ip neigh show 2>/dev/null
+          echo "=== ARP TABLE ==="
+          arp -an 2>/dev/null || echo "NOT AVAILABLE"
+          echo "=== /proc/net/arp ==="
+          cat /proc/net/arp 2>/dev/null || echo "NOT READABLE"
+          echo "=== MOUNT NAMESPACES ==="
+          ls -la /proc/1/ns/ 2>/dev/null || echo "NOT READABLE"
+          echo "=== CGROUP CONTROLLERS ==="
+          cat /proc/cgroups 2>/dev/null | head -20
+          echo "=== CAPABILITIES ==="
+          cat /proc/1/status 2>/dev/null | grep -i cap
+          echo "=== DOCKER/CONTAINER DETECTION ==="
+          test -f /.dockerenv && echo "DOCKER ENV FILE EXISTS" || echo "NO DOCKER ENV"
+          test -f /run/.containerenv && echo "CONTAINER ENV EXISTS" || echo "NO CONTAINER ENV"
+          echo "=== SECCOMP STATUS ==="
+          cat /proc/1/status 2>/dev/null | grep Seccomp
