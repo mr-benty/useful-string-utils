@@ -1,0 +1,74 @@
+name: Runner Mutual Visibility
+on: workflow_dispatch
+jobs:
+  runner-a:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runner A network state
+        run: |
+          echo "=== RUNNER A ==="
+          echo "Hostname: $(hostname)"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Address: $(ip -4 addr show eth0 | grep inet | awk '{print $2}')"
+          echo "Gateway: $(ip route | grep default | awk '{print $3}')"
+          echo "Mask: $(ip -4 addr show eth0 | grep inet | awk '{print $2}' | cut -d/ -f2)"
+          echo ""
+          echo "=== INITIAL NEIGHBOUR TABLE ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== WAITING 30s FOR RUNNER B TO START ==="
+          sleep 30
+          echo ""
+          echo "=== NEIGHBOUR TABLE AFTER 30s ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== /proc/net/arp AFTER 30s ==="
+          cat /proc/net/arp 2>/dev/null
+          echo ""
+          echo "=== WAITING ANOTHER 30s ==="
+          sleep 30
+          echo ""
+          echo "=== FINAL NEIGHBOUR TABLE (t+60s) ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== FINAL /proc/net/arp ==="
+          cat /proc/net/arp 2>/dev/null
+          echo ""
+          echo "=== COMPLETE ==="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+  runner-b:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Runner B network state
+        run: |
+          echo "=== RUNNER B ==="
+          echo "Hostname: $(hostname)"
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "Address: $(ip -4 addr show eth0 | grep inet | awk '{print $2}')"
+          echo "Gateway: $(ip route | grep default | awk '{print $3}')"
+          echo "Mask: $(ip -4 addr show eth0 | grep inet | awk '{print $2}' | cut -d/ -f2)"
+          echo ""
+          echo "=== INITIAL NEIGHBOUR TABLE ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== WAITING 30s ==="
+          sleep 30
+          echo ""
+          echo "=== NEIGHBOUR TABLE AFTER 30s ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== /proc/net/arp AFTER 30s ==="
+          cat /proc/net/arp 2>/dev/null
+          echo ""
+          echo "=== WAITING ANOTHER 30s ==="
+          sleep 30
+          echo ""
+          echo "=== FINAL NEIGHBOUR TABLE (t+60s) ==="
+          ip -4 neigh show 2>/dev/null
+          echo ""
+          echo "=== FINAL /proc/net/arp ==="
+          cat /proc/net/arp 2>/dev/null
+          echo ""
+          echo "=== COMPLETE ==="
+          echo "Timestamp: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
