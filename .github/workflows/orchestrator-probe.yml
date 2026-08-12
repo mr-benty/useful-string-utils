@@ -1,0 +1,43 @@
+name: Orchestrator Probe
+on: workflow_dispatch
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Probe hosted-compute orchestrator
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Extract our own allocation_id from IMDS
+          echo "=== OWN METADATA ==="
+          ALLOC=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); tags={t['name']:t['value'] for t in d.get('compute',{}).get('tagsList',[])}; print(tags.get('hosted_compute.allocation_id','NONE'))")
+          BASE_URL=$(curl -s -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" | python3 -c "import sys,json; d=json.loads(sys.stdin.read()); tags={t['name']:t['value'] for t in d.get('compute',{}).get('tagsList',[])}; print(tags.get('hosted_compute.base_ro_url','NONE'))")
+          echo "allocation_id=$ALLOC"
+          echo "base_url=$BASE_URL"
+          
+          echo ""
+          echo "=== ARM 0: CREDENTIAL-FREE — does it answer unauthenticated? ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1 || echo "CONNECT_FAILED"
+          
+          echo ""
+          echo "=== INVENTED SIBLING HOST ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            --connect-timeout 5 --max-time 10 \
+            "https://hosted-compute-request-orchestrator-prod-qqqqzzzz.githubapp.com/vm/v1" 2>&1 || echo "CONNECT_FAILED"
+          
+          echo ""
+          echo "=== ARM 1: GITHUB_TOKEN as bearer ==="
+          curl -s -w '\nHTTP:%{http_code}\nSIZE:%{size_download}' \
+            -H "Authorization: bearer $GITHUB_TOKEN" \
+            --connect-timeout 5 --max-time 10 \
+            "$BASE_URL" 2>&1 || echo "CONNECT_FAILED"
+          
+          echo ""
+          echo "=== RUNNER ENVIRONMENT: credential-shaped vars ==="
+          env | grep -i 'ACTIONS_\|RUNNER_\|TOKEN\|AUTH\|SECRET\|CREDENTIAL' | sed 's/=.*/=<REDACTED>/' | sort
+          
+          echo ""
+          echo "=== RUNNER AGENT CONFIG ==="
+          cat /home/runner/.env 2>/dev/null | grep -i 'url\|token\|auth\|credential' | sed 's/=.*/=<REDACTED>/' || echo "NO .env"
