@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
+  <rect width="200" height="200" fill="lightblue"/>
+  <text x="10" y="50" font-size="14">viewscreen-xss-control-8f3a</text>
+  <script>document.title='VIEWSCREEN_XSS_FIRED_8f3a'</script>
+</svg>
